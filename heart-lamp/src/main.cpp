@@ -1,44 +1,44 @@
 #include <Arduino.h>
 
-#include <Wire.h>
 #include <ESP8266WiFi.h>
-#include <PubSubClient.h>
-#include <aREST.h>
-
-#include <Adafruit_NeoPixel.h>
-#include <DNSServer.h>
-#include <ESP8266WebServer.h>
+#include <FirebaseArduino.h>
 #include <WiFiManager.h>
-
+#include <ESP8266HTTPClient.h>
+#include <Wire.h>
+#include <Adafruit_NeoPixel.h>
 #include "Adafruit_MPR121.h"
 
 // Pin Initialization
-#define PIN_PIR                     0
+#define PIN_PIR                     5
 #define PIN_MIC                     A0
 #define PIN_TOUCH                   1
 #define PIN_PIXELS                  4
 #define PIN_LED                     2
+#define PIN_CAP                     16
 
-#define BAUD_RATE                   9600
+#define BAUD_RATE                   115200
 
-//Client Initialization
-WiFiClient espClient;
-PubSubClient client(espClient);
+// Firebase Defines
+#define FIREBASE_HOST "gemini-lamp.firebaseio.com"
+#define FIREBASE_AUTH "y4041WZ3eWpUJeQaFJrIfKtaUc473SHUoQ9SpRjZ"
 
-// aREST Initialization
-#define LISTEN_PORT                 80
+#define FIREBASE_TARGET             String("rithy")
+#define FIREBASE_SELF               String("kevin")
+#define TOUCH_TARGET                "/touch"
+#define MOTION_TARGET               "/motion"
 
-aREST rest = aREST(client);
-
-char* device_id = "gemini";
-
-// WiFiServer server(LISTEN_PORT);
+#define FIREBASE_POLL_INTERVAL      1000
 
 // NeoPixel Initialization
 #define NUM_PIXELS                  1
 #define NP_WHITE                    255,255,255
 #define NP_RED                      255,0,0
 #define NP_OFF                      0,0,0
+#define NP_TOUCH_RAMP_DELAY         10
+#define NP_TOUCH_ON_DELAY           1500
+#define NP_MOTION_RAMP_DELAY        1
+#define NP_MOTION_ON_DELAY          200
+#define NP_MOTION_ITER              3
 
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUM_PIXELS, PIN_PIXELS, NEO_GRB + NEO_KHZ800);
 
@@ -49,100 +49,200 @@ bool cap_connected = 0;
 
 Adafruit_MPR121 cap = Adafruit_MPR121();
 
-// REST Variables
-bool received_touch = 0;
-bool received_motion = 0;
+// State Variables
+bool touch_detected = 0;
+bool touch_animate = 0;
+bool motion_detected = 0;
+bool motion_animate = 0;
 
-bool send_touch = 0;
-bool send_motion = 0;
+unsigned long previous_time = 0;
+unsigned long current_time = 0;
 
+void set_pixels_chain_colour(int r, int g, int b);
+void touch_animation();
+void motion_animation();
+void firebase_state_machine();
+void sensor_state_machine();
 
-void callback(char* topic, byte* payload, unsigned int length);
-int touch_animation(String command);
-int motion_animation(String command);
-void idle_state_machine();
+void motion_interrupt(){
+  motion_detected = 1;
+  motion_animate = 1;
+}
+
+void touch_interrupt(){
+  touch_detected = 1;
+  touch_animate = 1;
+}
 
 void setup() {
-
   Serial.begin(BAUD_RATE);
-  client.setCallback(callback);
 
-  Serial.println("Initializing RESTful Environment");
-
-  rest.function("touch", touch_animation);
-  rest.function("motion", motion_animation);
-
-  rest.set_id(device_id);
-  rest.set_name("heart-lamp-rithy");
-
+  // connect to wifi.
   Serial.println("Starting WiFi Manager");
   WiFiManager wifiManager;
   wifiManager.autoConnect("AutoConnectAP");
   Serial.println("WiFi connected.");
-
-  // Start the server
-  // server.begin();
-  // Serial.println("Server started");
-
-  // Print the IP address
+  Serial.print("WiFi IP: ");
   Serial.println(WiFi.localIP());
+
+  Serial.println("Connecting to Firebase");
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  Serial.println("Firebase Connected!");
 
   //Peripherals Setup
   pixels.begin();
 
   // if (cap.begin(0x5A)) {
-  //   Serial.println("Cap Connected.");
+  //   Serial.println("MPR121 Connected.");
   //   cap_connected = 1;
+  // }
+  // else{
+  //   Serial.println("MPR121 Not Found.");
   // }
 
   pinMode(PIN_PIR, INPUT);
+  pinMode(PIN_CAP, INPUT);
+  attachInterrupt(digitalPinToInterrupt(PIN_PIR), motion_interrupt, RISING);
+  attachInterrupt(digitalPinToInterrupt(PIN_CAP), touch_interrupt, FALLING);
+
   pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
 
   Serial.println("Setup Complete");
 
-  char* out_topic = rest.get_topic();
-
 }
+
 
 void loop() {
 
-    // Handle REST calls
-    // WiFiClient client = server.available();
-    // if (!client) {
-    //   Serial.println("Error with WiFiClient, WiFi-less Functionality");
-    //   return;
-    // }
-    // while(!client.available()){
-    //   delay(1);
-    // }
-    rest.handle(client);
+  firebase_state_machine(); //Firebase Actions Occur Every FIREBASE_POLL_INTERVAL (Default: 1 Second)
+  sensor_state_machine();
 
 }
 
-int touch_animation(String command){
-  for (int i = 0; i < NUM_PIXELS; i++){
-    pixels.setPixelColor(i, pixels.Color(NP_WHITE));
+
+void firebase_state_machine(){
+
+  current_time = millis();
+
+  if (current_time - previous_time > FIREBASE_POLL_INTERVAL){
+
+    bool touch_received = Firebase.getBool(FIREBASE_TARGET + TOUCH_TARGET);
+    if (Firebase.failed()) {
+        Serial.print("Getting /touch failed:");
+        Serial.println(Firebase.error());
+        return;
+    }
+    if (touch_received){
+      Firebase.setBool(FIREBASE_TARGET + TOUCH_TARGET, false);
+      touch_animation();
+
+      if (Firebase.failed()) {
+          Serial.print("Setting /touch failed:");
+          Serial.println(Firebase.error());
+          return;
+      }
+    }
+
+    bool motion_received = Firebase.getBool(FIREBASE_TARGET + MOTION_TARGET);
+    if (Firebase.failed()) {
+        Serial.print("Getting /motion failed:");
+        Serial.println(Firebase.error());
+        return;
+    }
+
+    if (motion_received){
+      Firebase.setBool(FIREBASE_TARGET + MOTION_TARGET, false);
+      motion_animation();
+
+      if (Firebase.failed()) {
+        Serial.print("Setting /motion failed:");
+        Serial.println(Firebase.error());
+        return;
+      }
+    }
+
+    if (touch_detected){
+      Firebase.setBool(FIREBASE_SELF + TOUCH_TARGET, true);
+      touch_detected = 0;
+    }
+
+    if (motion_detected){
+      Firebase.setBool(FIREBASE_SELF + MOTION_TARGET, true);
+      motion_detected = 0;
+    }
+
   }
-  pixels.show();
-  delay(1000);
-  for (int i = 0; i < NUM_PIXELS; i++){
-    pixels.setPixelColor(i, pixels.Color(NP_OFF));
+}
+
+void sensor_state_machine(){
+
+  if (motion_animate){
+
+    Serial.println("Motion Animation.");
+
+    motion_animation();
+
+    motion_animate = 0;
+
   }
-  pixels.show();
 
-  return 1;
+  if (touch_animate){
+
+    Serial.println("Touch Animation.");
+
+    touch_animation();
+
+    touch_animate = 0;
+
+  }
+
 }
 
-int motion_animation(String command){
-  return 1;
+void touch_animation(){
+
+  for (int i = 0; i < 255; i++){
+    set_pixels_chain_colour(i,i,i);
+    pixels.show();
+    delay(NP_TOUCH_RAMP_DELAY);
+    yield();
+  }
+  delay(NP_TOUCH_ON_DELAY);
+  for (int i = 255; i >= 0; i--){
+    set_pixels_chain_colour(i,i,i);
+    pixels.show();
+    delay(NP_TOUCH_RAMP_DELAY);
+    yield();
+  }
 }
 
-void idle_state_machine(){
-  Serial.println("IDLE");
+void motion_animation(){
+
+  for (int i = 0; i < NP_MOTION_ITER; i++){
+    for (int j = 0; j < 255; j++){
+      set_pixels_chain_colour(0,j/2,j);
+      pixels.show();
+      delay(NP_MOTION_RAMP_DELAY);
+      yield();
+    }
+    for (int j = 0; j < 255; j++){
+      set_pixels_chain_colour(j, 127+j/2, 255);
+      pixels.show();
+      delay(NP_MOTION_RAMP_DELAY);
+      yield();
+    }
+    delay(NP_MOTION_ON_DELAY);
+    for (int j = 255; j >= 0; j--){
+      set_pixels_chain_colour(j,j,j);
+      pixels.show();
+      delay(NP_MOTION_RAMP_DELAY);
+      yield();
+    }
+  }
 }
 
-void callback(char* topic, byte* payload, unsigned int length) {
-
-  rest.handle_callback(client, topic, payload, length);
-
+void set_pixels_chain_colour(int r, int g, int b){
+  for (int i = 0; i < NUM_PIXELS; i++){
+    pixels.setPixelColor(i, pixels.Color(r,g,b));
+  }
 }
