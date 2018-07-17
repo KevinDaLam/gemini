@@ -8,13 +8,17 @@
 #include <Adafruit_NeoPixel.h>
 #include "Adafruit_MPR121.h"
 
+#include <CapacitiveSensor.h>
+
+
 // Pin Initialization
 #define PIN_PIR                     5
 #define PIN_MIC                     A0
 #define PIN_TOUCH                   1
 #define PIN_PIXELS                  4
 #define PIN_LED                     2
-#define PIN_CAP                     16
+#define PIN_LED_CHIP                16
+#define PIN_CAP                     14
 
 #define BAUD_RATE                   115200
 
@@ -33,9 +37,13 @@
 #define NUM_PIXELS                  1
 #define NP_WHITE                    255,255,255
 #define NP_RED                      255,0,0
+#define NP_GREEN                    0,255,0
 #define NP_OFF                      0,0,0
-#define NP_TOUCH_RAMP_DELAY         10
-#define NP_TOUCH_ON_DELAY           1500
+#define NP_RGB_MAX                  255
+#define NP_SETUP_COMPLETE_ITER      5
+#define NP_SETUP_COMPLETE_DELAY     100
+#define NP_TOUCH_RAMP_DELAY         5
+#define NP_TOUCH_ON_DELAY           1000
 #define NP_MOTION_RAMP_DELAY        1
 #define NP_MOTION_ON_DELAY          200
 #define NP_MOTION_ITER              3
@@ -47,7 +55,9 @@ Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUM_PIXELS, PIN_PIXELS, NEO_GRB + N
 
 bool cap_connected = 0;
 
-Adafruit_MPR121 cap = Adafruit_MPR121();
+// Adafruit_MPR121 cap = Adafruit_MPR121();
+CapacitiveSensor cap = CapacitiveSensor(2, 14);
+
 
 // State Variables
 bool touch_detected = 0;
@@ -75,7 +85,13 @@ void touch_interrupt(){
 }
 
 void setup() {
+
+  pixels.begin();
+
   Serial.begin(BAUD_RATE);
+
+  set_pixels_chain_colour(NP_RED);
+  pixels.show();
 
   // connect to wifi.
   Serial.println("Starting WiFi Manager");
@@ -89,24 +105,30 @@ void setup() {
   Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
   Serial.println("Firebase Connected!");
 
-  //Peripherals Setup
-  pixels.begin();
-
-  // if (cap.begin(0x5A)) {
-  //   Serial.println("MPR121 Connected.");
-  //   cap_connected = 1;
-  // }
-  // else{
-  //   Serial.println("MPR121 Not Found.");
-  // }
-
   pinMode(PIN_PIR, INPUT);
   pinMode(PIN_CAP, INPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_PIR), motion_interrupt, RISING);
   attachInterrupt(digitalPinToInterrupt(PIN_CAP), touch_interrupt, FALLING);
 
   pinMode(PIN_LED, OUTPUT);
-  digitalWrite(PIN_LED, LOW);
+  pinMode(PIN_LED_CHIP, OUTPUT);
+  digitalWrite(PIN_LED, HIGH);
+  digitalWrite(PIN_LED_CHIP, HIGH);
+
+  for (int i = 0; i < NP_SETUP_COMPLETE_ITER; i++){
+    for (int i = 0; i < NP_RGB_MAX; i++){
+      set_pixels_chain_colour(0, i, 0);
+      pixels.show();
+      delay(2);
+    }
+    delay(NP_SETUP_COMPLETE_DELAY);
+    for (int i = NP_RGB_MAX; i >= 0; i--){
+      set_pixels_chain_colour(0, i, 0);
+      pixels.show();
+      delay(2);
+    }
+    delay(NP_SETUP_COMPLETE_DELAY);
+  }
 
   Serial.println("Setup Complete");
 
@@ -117,6 +139,10 @@ void loop() {
 
   firebase_state_machine(); //Firebase Actions Occur Every FIREBASE_POLL_INTERVAL (Default: 1 Second)
   sensor_state_machine();
+
+  Serial.println(digitalRead(PIN_CAP));
+
+  delay(10);
 
 }
 
@@ -201,14 +227,14 @@ void sensor_state_machine(){
 
 void touch_animation(){
 
-  for (int i = 0; i < 255; i++){
+  for (int i = 0; i < NP_RGB_MAX; i++){
     set_pixels_chain_colour(i,i,i);
     pixels.show();
     delay(NP_TOUCH_RAMP_DELAY);
     yield();
   }
   delay(NP_TOUCH_ON_DELAY);
-  for (int i = 255; i >= 0; i--){
+  for (int i = NP_RGB_MAX; i >= 0; i--){
     set_pixels_chain_colour(i,i,i);
     pixels.show();
     delay(NP_TOUCH_RAMP_DELAY);
@@ -219,20 +245,20 @@ void touch_animation(){
 void motion_animation(){
 
   for (int i = 0; i < NP_MOTION_ITER; i++){
-    for (int j = 0; j < 255; j++){
+    for (int j = 0; j < NP_RGB_MAX; j++){
       set_pixels_chain_colour(0,j/2,j);
       pixels.show();
       delay(NP_MOTION_RAMP_DELAY);
       yield();
     }
-    for (int j = 0; j < 255; j++){
-      set_pixels_chain_colour(j, 127+j/2, 255);
+    for (int j = 0; j < NP_RGB_MAX; j++){
+      set_pixels_chain_colour(j, 127+j/2, NP_RGB_MAX);
       pixels.show();
       delay(NP_MOTION_RAMP_DELAY);
       yield();
     }
     delay(NP_MOTION_ON_DELAY);
-    for (int j = 255; j >= 0; j--){
+    for (int j = NP_RGB_MAX; j >= 0; j--){
       set_pixels_chain_colour(j,j,j);
       pixels.show();
       delay(NP_MOTION_RAMP_DELAY);
