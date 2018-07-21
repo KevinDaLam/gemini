@@ -4,21 +4,19 @@
 #include <FirebaseArduino.h>
 #include <WiFiManager.h>
 #include <ESP8266HTTPClient.h>
-#include <Wire.h>
 #include <Adafruit_NeoPixel.h>
-#include "Adafruit_MPR121.h"
 
 #include <CapacitiveSensor.h>
 
 
 // Pin Initialization
 #define PIN_PIR                     5
-#define PIN_MIC                     A0
 #define PIN_TOUCH                   1
-#define PIN_PIXELS                  4
+#define PIN_PIXELS                  14
+#define PIN_BASE_PIXELS             10
 #define PIN_LED                     2
 #define PIN_LED_CHIP                16
-#define PIN_CAP                     14
+#define PIN_CAP                     4
 
 #define BAUD_RATE                   115200
 
@@ -26,17 +24,27 @@
 #define FIREBASE_HOST "gemini-lamp.firebaseio.com"
 #define FIREBASE_AUTH "y4041WZ3eWpUJeQaFJrIfKtaUc473SHUoQ9SpRjZ"
 
-#define FIREBASE_TARGET             String("rithy")
-#define FIREBASE_SELF               String("kevin")
+#define FIREBASE_TARGET             String("kevin")
+#define FIREBASE_SELF               String("rithy")
 #define TOUCH_TARGET                "/touch"
 #define MOTION_TARGET               "/motion"
+#define HEART_ACTIVE_TARGET         "/heart/active"
+#define HEART_RED_TARGET            "/heart/r"
+#define HEART_GREEN_TARGET          "/heart/g"
+#define HEART_BLUE_TARGET           "/heart/b"
+#define BASE_ACTIVE_TARGET          "/base/active"
+#define BASE_RED_TARGET             "/base/r"
+#define BASE_GREEN_TARGET           "/base/g"
+#define BASE_BLUE_TARGET            "/base/b"
 
 #define FIREBASE_POLL_INTERVAL      1000
 
 // NeoPixel Initialization
 #define NUM_PIXELS                  1
+#define NUM_BASE_PIXELS             2
 #define NP_WHITE                    255,255,255
 #define NP_RED                      255,0,0
+#define NP_FUSCHIA                  255,0,255
 #define NP_GREEN                    0,255,0
 #define NP_OFF                      0,0,0
 #define NP_RGB_MAX                  255
@@ -49,15 +57,7 @@
 #define NP_MOTION_ITER              3
 
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUM_PIXELS, PIN_PIXELS, NEO_GRB + NEO_KHZ800);
-
-// Capacitive Sensor Initialization
-#define CAP_ADDR                    0x5A
-
-bool cap_connected = 0;
-
-// Adafruit_MPR121 cap = Adafruit_MPR121();
-CapacitiveSensor cap = CapacitiveSensor(2, 14);
-
+Adafruit_NeoPixel base_pixels = Adafruit_NeoPixel(NUM_BASE_PIXELS, PIN_BASE_PIXELS, NEO_GRB + NEO_KHZ800);
 
 // State Variables
 bool touch_detected = 0;
@@ -68,7 +68,7 @@ bool motion_animate = 0;
 unsigned long previous_time = 0;
 unsigned long current_time = 0;
 
-void set_pixels_chain_colour(int r, int g, int b);
+void set_pixels_chain_colour(Adafruit_NeoPixel *t_pixels, int r, int g, int b);
 void touch_animation();
 void motion_animation();
 void firebase_state_machine();
@@ -87,11 +87,11 @@ void touch_interrupt(){
 void setup() {
 
   pixels.begin();
+  base_pixels.begin();
 
   Serial.begin(BAUD_RATE);
 
-  set_pixels_chain_colour(NP_RED);
-  pixels.show();
+  set_pixels_chain_colour(&pixels, NP_FUSCHIA);
 
   // connect to wifi.
   Serial.println("Starting WiFi Manager");
@@ -108,7 +108,7 @@ void setup() {
   pinMode(PIN_PIR, INPUT);
   pinMode(PIN_CAP, INPUT);
   attachInterrupt(digitalPinToInterrupt(PIN_PIR), motion_interrupt, RISING);
-  attachInterrupt(digitalPinToInterrupt(PIN_CAP), touch_interrupt, FALLING);
+  // attachInterrupt(digitalPinToInterrupt(PIN_CAP), touch_interrupt, FALLING);
 
   pinMode(PIN_LED, OUTPUT);
   pinMode(PIN_LED_CHIP, OUTPUT);
@@ -117,14 +117,13 @@ void setup() {
 
   for (int i = 0; i < NP_SETUP_COMPLETE_ITER; i++){
     for (int i = 0; i < NP_RGB_MAX; i++){
-      set_pixels_chain_colour(0, i, 0);
+      set_pixels_chain_colour(&pixels, 0, i, 0);
       pixels.show();
       delay(2);
     }
     delay(NP_SETUP_COMPLETE_DELAY);
     for (int i = NP_RGB_MAX; i >= 0; i--){
-      set_pixels_chain_colour(0, i, 0);
-      pixels.show();
+      set_pixels_chain_colour(&pixels, 0, i, 0);
       delay(2);
     }
     delay(NP_SETUP_COMPLETE_DELAY);
@@ -139,10 +138,6 @@ void loop() {
 
   firebase_state_machine(); //Firebase Actions Occur Every FIREBASE_POLL_INTERVAL (Default: 1 Second)
   sensor_state_machine();
-
-  Serial.println(digitalRead(PIN_CAP));
-
-  delay(10);
 
 }
 
@@ -190,7 +185,38 @@ void firebase_state_machine(){
 
     if (touch_detected){
       Firebase.setBool(FIREBASE_SELF + TOUCH_TARGET, true);
-      touch_detected = 0;
+      // touch_detected = 0;
+    }
+    else{
+      bool heart_active = Firebase.getBool(FIREBASE_SELF + HEART_ACTIVE_TARGET);
+      if (Firebase.failed()){
+        Serial.print("Getting heart/active failed");
+        Serial.println(Firebase.error());
+      }
+      if (heart_active){
+        int red = Firebase.getInt(FIREBASE_SELF + HEART_RED_TARGET);
+        int green = Firebase.getInt(FIREBASE_SELF + HEART_GREEN_TARGET);
+        int blue = Firebase.getInt(FIREBASE_SELF + HEART_BLUE_TARGET);
+        set_pixels_chain_colour(&pixels, red, green, blue);
+      }
+      else{
+        set_pixels_chain_colour(&pixels, NP_OFF);
+      }
+
+      bool base_active = Firebase.getBool(FIREBASE_SELF + BASE_ACTIVE_TARGET);
+      if (Firebase.failed()){
+        Serial.print("Getting base/active failed");
+        Serial.println(Firebase.error());
+      }
+      if (base_active){
+        int red = Firebase.getInt(FIREBASE_SELF + BASE_RED_TARGET);
+        int green = Firebase.getInt(FIREBASE_SELF + BASE_GREEN_TARGET);
+        int blue = Firebase.getInt(FIREBASE_SELF + BASE_BLUE_TARGET);
+        set_pixels_chain_colour(&base_pixels, red, green, blue);
+      }
+      else{
+        set_pixels_chain_colour(&base_pixels, NP_OFF);
+      }
     }
 
     if (motion_detected){
@@ -203,6 +229,8 @@ void firebase_state_machine(){
 
 void sensor_state_machine(){
 
+  touch_detected = !digitalRead(PIN_CAP);
+
   if (motion_animate){
 
     Serial.println("Motion Animation.");
@@ -213,7 +241,8 @@ void sensor_state_machine(){
 
   }
 
-  if (touch_animate){
+  // if (touch_animate){
+  if(touch_detected){
 
     Serial.println("Touch Animation.");
 
@@ -228,15 +257,13 @@ void sensor_state_machine(){
 void touch_animation(){
 
   for (int i = 0; i < NP_RGB_MAX; i++){
-    set_pixels_chain_colour(i,i,i);
-    pixels.show();
+    set_pixels_chain_colour(&pixels, i,i,i);
     delay(NP_TOUCH_RAMP_DELAY);
     yield();
   }
   delay(NP_TOUCH_ON_DELAY);
   for (int i = NP_RGB_MAX; i >= 0; i--){
-    set_pixels_chain_colour(i,i,i);
-    pixels.show();
+    set_pixels_chain_colour(&pixels, i,i,i);
     delay(NP_TOUCH_RAMP_DELAY);
     yield();
   }
@@ -246,29 +273,27 @@ void motion_animation(){
 
   for (int i = 0; i < NP_MOTION_ITER; i++){
     for (int j = 0; j < NP_RGB_MAX; j++){
-      set_pixels_chain_colour(0,j/2,j);
-      pixels.show();
+      set_pixels_chain_colour(&pixels, 0,j/2,j);
       delay(NP_MOTION_RAMP_DELAY);
       yield();
     }
     for (int j = 0; j < NP_RGB_MAX; j++){
-      set_pixels_chain_colour(j, 127+j/2, NP_RGB_MAX);
-      pixels.show();
+      set_pixels_chain_colour(&pixels, j, 127+j/2, NP_RGB_MAX);
       delay(NP_MOTION_RAMP_DELAY);
       yield();
     }
     delay(NP_MOTION_ON_DELAY);
     for (int j = NP_RGB_MAX; j >= 0; j--){
-      set_pixels_chain_colour(j,j,j);
-      pixels.show();
+      set_pixels_chain_colour(&pixels, j,j,j);
       delay(NP_MOTION_RAMP_DELAY);
       yield();
     }
   }
 }
 
-void set_pixels_chain_colour(int r, int g, int b){
-  for (int i = 0; i < NUM_PIXELS; i++){
-    pixels.setPixelColor(i, pixels.Color(r,g,b));
+void set_pixels_chain_colour(Adafruit_NeoPixel *t_pixels, int r, int g, int b){
+  for (int i = 0; i < t_pixels->numPixels(); i++){
+    t_pixels->setPixelColor(i, pixels.Color(r,g,b));
   }
+  t_pixels->show();
 }
