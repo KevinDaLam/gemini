@@ -20,6 +20,11 @@
 
 #define BAUD_RATE                   115200
 
+// WiFiManager Object
+WiFiManager wifiManager;
+
+#define ACCESS_POINT_NAME           "HeartLamp"
+
 // Firebase Defines
 #define FIREBASE_HOST "gemini-lamp.firebaseio.com"
 #define FIREBASE_AUTH "y4041WZ3eWpUJeQaFJrIfKtaUc473SHUoQ9SpRjZ"
@@ -37,10 +42,10 @@
 #define BASE_GREEN_TARGET           "/base/g"
 #define BASE_BLUE_TARGET            "/base/b"
 
-#define FIREBASE_POLL_INTERVAL      1000
+#define FIREBASE_POLL_INTERVAL      5000
 
 // NeoPixel Initialization
-#define NUM_PIXELS                  1
+#define NUM_PIXELS                  3
 #define NUM_BASE_PIXELS             2
 #define NP_WHITE                    255,255,255
 #define NP_RED                      255,0,0
@@ -64,6 +69,7 @@ bool touch_detected = 0;
 bool touch_animate = 0;
 bool motion_detected = 0;
 bool motion_animate = 0;
+int fail_count = 0;
 
 unsigned long previous_time = 0;
 unsigned long current_time = 0;
@@ -73,6 +79,7 @@ void touch_animation();
 void motion_animation();
 void firebase_state_machine();
 void sensor_state_machine();
+bool check_firebase_fail(String path, String type);
 
 void motion_interrupt(){
   motion_detected = 1;
@@ -95,8 +102,7 @@ void setup() {
 
   // connect to wifi.
   Serial.println("Starting WiFi Manager");
-  WiFiManager wifiManager;
-  wifiManager.autoConnect("AutoConnectAP");
+  wifiManager.autoConnect(ACCESS_POINT_NAME);
   Serial.println("WiFi connected.");
   Serial.print("WiFi IP: ");
   Serial.println(WiFi.localIP());
@@ -133,7 +139,6 @@ void setup() {
 
 }
 
-
 void loop() {
 
   firebase_state_machine(); //Firebase Actions Occur Every FIREBASE_POLL_INTERVAL (Default: 1 Second)
@@ -146,54 +151,43 @@ void firebase_state_machine(){
 
   current_time = millis();
 
+  if (fail_count >= 10){
+    // ESP.reset();
+    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+  }
+
   if (current_time - previous_time > FIREBASE_POLL_INTERVAL){
 
+    previous_time = current_time;
+
     bool touch_received = Firebase.getBool(FIREBASE_TARGET + TOUCH_TARGET);
-    if (Firebase.failed()) {
-        Serial.print("Getting /touch failed:");
-        Serial.println(Firebase.error());
-        return;
+    if (check_firebase_fail(FIREBASE_TARGET + TOUCH_TARGET, "Getting")){
+
     }
-    if (touch_received){
+    else if (touch_received){
       Firebase.setBool(FIREBASE_TARGET + TOUCH_TARGET, false);
       touch_animation();
 
-      if (Firebase.failed()) {
-          Serial.print("Setting /touch failed:");
-          Serial.println(Firebase.error());
-          return;
-      }
+      check_firebase_fail(FIREBASE_TARGET + TOUCH_TARGET, "Getting");
     }
 
     bool motion_received = Firebase.getBool(FIREBASE_TARGET + MOTION_TARGET);
-    if (Firebase.failed()) {
-        Serial.print("Getting /motion failed:");
-        Serial.println(Firebase.error());
-        return;
-    }
-
-    if (motion_received){
+    if (check_firebase_fail(FIREBASE_TARGET + MOTION_TARGET, "Getting")){}
+    else if (motion_received){
       Firebase.setBool(FIREBASE_TARGET + MOTION_TARGET, false);
       motion_animation();
 
-      if (Firebase.failed()) {
-        Serial.print("Setting /motion failed:");
-        Serial.println(Firebase.error());
-        return;
-      }
+      check_firebase_fail(FIREBASE_TARGET + TOUCH_TARGET, "Setting");
     }
 
     if (touch_detected){
       Firebase.setBool(FIREBASE_SELF + TOUCH_TARGET, true);
-      // touch_detected = 0;
+      check_firebase_fail(FIREBASE_SELF + TOUCH_TARGET, "Setting");
     }
     else{
       bool heart_active = Firebase.getBool(FIREBASE_SELF + HEART_ACTIVE_TARGET);
-      if (Firebase.failed()){
-        Serial.print("Getting heart/active failed");
-        Serial.println(Firebase.error());
-      }
-      if (heart_active){
+      if (check_firebase_fail(FIREBASE_SELF + HEART_ACTIVE_TARGET, "Getting")){}
+      else if (heart_active){
         int red = Firebase.getInt(FIREBASE_SELF + HEART_RED_TARGET);
         int green = Firebase.getInt(FIREBASE_SELF + HEART_GREEN_TARGET);
         int blue = Firebase.getInt(FIREBASE_SELF + HEART_BLUE_TARGET);
@@ -204,11 +198,8 @@ void firebase_state_machine(){
       }
 
       bool base_active = Firebase.getBool(FIREBASE_SELF + BASE_ACTIVE_TARGET);
-      if (Firebase.failed()){
-        Serial.print("Getting base/active failed");
-        Serial.println(Firebase.error());
-      }
-      if (base_active){
+      if (check_firebase_fail(FIREBASE_SELF + BASE_ACTIVE_TARGET, "Getting")){}
+      else if (base_active){
         int red = Firebase.getInt(FIREBASE_SELF + BASE_RED_TARGET);
         int green = Firebase.getInt(FIREBASE_SELF + BASE_GREEN_TARGET);
         int blue = Firebase.getInt(FIREBASE_SELF + BASE_BLUE_TARGET);
@@ -222,6 +213,7 @@ void firebase_state_machine(){
     if (motion_detected){
       Firebase.setBool(FIREBASE_SELF + MOTION_TARGET, true);
       motion_detected = 0;
+      check_firebase_fail(FIREBASE_SELF + MOTION_TARGET, "Setting");
     }
 
   }
@@ -296,4 +288,18 @@ void set_pixels_chain_colour(Adafruit_NeoPixel *t_pixels, int r, int g, int b){
     t_pixels->setPixelColor(i, pixels.Color(r,g,b));
   }
   t_pixels->show();
+}
+
+bool check_firebase_fail(String path, String type){
+  if(Firebase.failed()){
+    Serial.print(type);
+    Serial.print(" ");
+    Serial.print(path);
+    Serial.print(" failed: ");
+    Serial.println(Firebase.error());
+
+    fail_count++;
+    return true;
+  }
+  return false;
 }
