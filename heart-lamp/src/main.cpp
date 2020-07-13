@@ -47,19 +47,19 @@ WiFiManager wifiManager;
 // NeoPixel Initialization
 #define NUM_PIXELS                  3
 #define NUM_BASE_PIXELS             2
-#define NP_WHITE                    255,255,255
+#define NP_WHITE                    100,100,100
 #define NP_RED                      255,0,0
-#define NP_FUSCHIA                  255,0,255
-#define NP_GREEN                    0,255,0
+#define NP_FUSCHIA                  100,0,100
+#define NP_GREEN                    0,100,0
 #define NP_OFF                      0,0,0
 #define NP_RGB_MAX                  255
-#define NP_SETUP_COMPLETE_ITER      5
-#define NP_SETUP_COMPLETE_DELAY     100
-#define NP_TOUCH_RAMP_DELAY         5
-#define NP_TOUCH_ON_DELAY           1000
-#define NP_MOTION_RAMP_DELAY        1
-#define NP_MOTION_ON_DELAY          200
-#define NP_MOTION_ITER              3
+#define NP_SETUP_COMPLETE_ITER      2
+#define NP_SETUP_COMPLETE_DELAY     25
+#define NP_TOUCH_RAMP_DELAY         3
+#define NP_TOUCH_ON_DELAY           500
+#define NP_MOTION_RAMP_DELAY        0
+#define NP_MOTION_ON_DELAY          50
+#define NP_MOTION_ITER              1
 
 Adafruit_NeoPixel pixels = Adafruit_NeoPixel(NUM_PIXELS, PIN_PIXELS, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel base_pixels = Adafruit_NeoPixel(NUM_BASE_PIXELS, PIN_BASE_PIXELS, NEO_GRB + NEO_KHZ800);
@@ -73,10 +73,12 @@ int fail_count = 0;
 
 unsigned long previous_time = 0;
 unsigned long current_time = 0;
+int heart_colour[3] = {0,0,0};
+int base_colour[3] = {0,0,0};
 
 void set_pixels_chain_colour(Adafruit_NeoPixel *t_pixels, int r, int g, int b);
 void touch_animation();
-void motion_animation();
+void motion_animation(Adafruit_NeoPixel *t_pixels);
 void firebase_state_machine();
 void sensor_state_machine();
 bool check_firebase_fail(String path, String type);
@@ -98,7 +100,7 @@ void setup() {
 
   Serial.begin(BAUD_RATE);
 
-  set_pixels_chain_colour(&pixels, NP_FUSCHIA);
+  set_pixels_chain_colour(&pixels, NP_WHITE);
 
   // connect to wifi.
   Serial.println("Starting WiFi Manager");
@@ -125,14 +127,13 @@ void setup() {
     for (int i = 0; i < NP_RGB_MAX; i++){
       set_pixels_chain_colour(&pixels, 0, i, 0);
       pixels.show();
-      delay(2);
+      delay(1);
     }
     delay(NP_SETUP_COMPLETE_DELAY);
     for (int i = NP_RGB_MAX; i >= 0; i--){
       set_pixels_chain_colour(&pixels, 0, i, 0);
-      delay(2);
+      delay(1);
     }
-    delay(NP_SETUP_COMPLETE_DELAY);
   }
 
   Serial.println("Setup Complete");
@@ -152,8 +153,9 @@ void firebase_state_machine(){
   current_time = millis();
 
   if (fail_count >= 10){
-    // ESP.reset();
-    Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
+    ESP.reset();
+    // Serial.println("Re-begin Firebase");
+    // Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
   }
 
   if (current_time - previous_time > FIREBASE_POLL_INTERVAL){
@@ -175,7 +177,9 @@ void firebase_state_machine(){
     if (check_firebase_fail(FIREBASE_TARGET + MOTION_TARGET, "Getting")){}
     else if (motion_received){
       Firebase.setBool(FIREBASE_TARGET + MOTION_TARGET, false);
-      motion_animation();
+      motion_animation(&pixels);
+
+      set_pixels_chain_colour(&pixels, heart_colour[0], heart_colour[1], heart_colour[2]);
 
       check_firebase_fail(FIREBASE_TARGET + TOUCH_TARGET, "Setting");
     }
@@ -188,10 +192,10 @@ void firebase_state_machine(){
       bool heart_active = Firebase.getBool(FIREBASE_SELF + HEART_ACTIVE_TARGET);
       if (check_firebase_fail(FIREBASE_SELF + HEART_ACTIVE_TARGET, "Getting")){}
       else if (heart_active){
-        int red = Firebase.getInt(FIREBASE_SELF + HEART_RED_TARGET);
-        int green = Firebase.getInt(FIREBASE_SELF + HEART_GREEN_TARGET);
-        int blue = Firebase.getInt(FIREBASE_SELF + HEART_BLUE_TARGET);
-        set_pixels_chain_colour(&pixels, red, green, blue);
+        heart_colour[0] = Firebase.getInt(FIREBASE_SELF + HEART_RED_TARGET);
+        heart_colour[1] = Firebase.getInt(FIREBASE_SELF + HEART_GREEN_TARGET);
+        heart_colour[2] = Firebase.getInt(FIREBASE_SELF + HEART_BLUE_TARGET);
+        set_pixels_chain_colour(&pixels, heart_colour[0], heart_colour[1], heart_colour[2]);
       }
       else{
         set_pixels_chain_colour(&pixels, NP_OFF);
@@ -200,10 +204,10 @@ void firebase_state_machine(){
       bool base_active = Firebase.getBool(FIREBASE_SELF + BASE_ACTIVE_TARGET);
       if (check_firebase_fail(FIREBASE_SELF + BASE_ACTIVE_TARGET, "Getting")){}
       else if (base_active){
-        int red = Firebase.getInt(FIREBASE_SELF + BASE_RED_TARGET);
-        int green = Firebase.getInt(FIREBASE_SELF + BASE_GREEN_TARGET);
-        int blue = Firebase.getInt(FIREBASE_SELF + BASE_BLUE_TARGET);
-        set_pixels_chain_colour(&base_pixels, red, green, blue);
+        base_colour[0] = Firebase.getInt(FIREBASE_SELF + BASE_RED_TARGET);
+        base_colour[1] = Firebase.getInt(FIREBASE_SELF + BASE_GREEN_TARGET);
+        base_colour[2] = Firebase.getInt(FIREBASE_SELF + BASE_BLUE_TARGET);
+        set_pixels_chain_colour(&base_pixels, base_colour[0], base_colour[1], base_colour[2]);
       }
       else{
         set_pixels_chain_colour(&base_pixels, NP_OFF);
@@ -227,21 +231,21 @@ void sensor_state_machine(){
 
     Serial.println("Motion Animation.");
 
-    motion_animation();
+    motion_animation(&base_pixels);
+
+    set_pixels_chain_colour(&base_pixels, base_colour[0], base_colour[1], base_colour[2]);
 
     motion_animate = 0;
 
   }
 
-  // if (touch_animate){
   if(touch_detected){
 
     Serial.println("Touch Animation.");
 
     touch_animation();
 
-    touch_animate = 0;
-
+    set_pixels_chain_colour(&pixels, heart_colour[0], heart_colour[1], heart_colour[2]);
   }
 
 }
@@ -261,24 +265,21 @@ void touch_animation(){
   }
 }
 
-void motion_animation(){
+void motion_animation(Adafruit_NeoPixel *t_pixels){
 
   for (int i = 0; i < NP_MOTION_ITER; i++){
     for (int j = 0; j < NP_RGB_MAX; j++){
-      set_pixels_chain_colour(&pixels, 0,j/2,j);
+      set_pixels_chain_colour(t_pixels, 0,j/2,j);
       delay(NP_MOTION_RAMP_DELAY);
-      yield();
     }
     for (int j = 0; j < NP_RGB_MAX; j++){
-      set_pixels_chain_colour(&pixels, j, 127+j/2, NP_RGB_MAX);
+      set_pixels_chain_colour(t_pixels, j, (NP_RGB_MAX/2)+j/2, NP_RGB_MAX);
       delay(NP_MOTION_RAMP_DELAY);
-      yield();
     }
     delay(NP_MOTION_ON_DELAY);
     for (int j = NP_RGB_MAX; j >= 0; j--){
-      set_pixels_chain_colour(&pixels, j,j,j);
+      set_pixels_chain_colour(t_pixels, j,j,j);
       delay(NP_MOTION_RAMP_DELAY);
-      yield();
     }
   }
 }
